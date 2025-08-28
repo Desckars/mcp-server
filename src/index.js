@@ -8,17 +8,32 @@ import {
   ListToolsRequestSchema,
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
+import dotenv from 'dotenv';
+import { LLMManager } from './llm/LLMManager.js';
+import { DatabaseManager } from './database/DatabaseManager.js';
+import { Logger } from './utils/Logger.js';
+import { ToolsRegistry } from './tools/ToolsRegistry.js';
 
-class MCPServer {
+// Cargar configuración de entorno
+dotenv.config();
+
+class UniversalMCPServer {
   constructor() {
+    this.logger = new Logger();
+    this.llmManager = new LLMManager();
+    this.dbManager = new DatabaseManager();
+    this.toolsRegistry = new ToolsRegistry(this.llmManager, this.dbManager);
+    
     this.server = new Server(
       {
-        name: 'mcp-server',
+        name: 'universal-mcp-server',
         version: '1.0.0',
       },
       {
         capabilities: {
           tools: {},
+          resources: {},
+          prompts: {},
         },
       }
     );
@@ -27,92 +42,143 @@ class MCPServer {
     this.setupErrorHandling();
   }
 
+  async initialize() {
+    try {
+      this.logger.info('Inicializando servidor MCP Universal...');
+      
+      // Inicializar conexión a base de datos
+      await this.dbManager.connect();
+      this.logger.info('✅ Base de datos conectada');
+      
+      // Inicializar LLMs
+      await this.llmManager.initialize();
+      this.logger.info('✅ LLMs inicializados');
+      
+      // Registrar herramientas
+      await this.toolsRegistry.registerTools();
+      this.logger.info('✅ Herramientas registradas');
+      
+      this.logger.info('🚀 Servidor MCP Universal listo');
+      
+    } catch (error) {
+      this.logger.error('Error durante la inicialización:', error);
+      throw error;
+    }
+  }
+
   setupToolHandlers() {
     // Listar herramientas disponibles
     this.server.setRequestHandler(ListToolsRequestSchema, async () => {
       return {
-        tools: [
-          {
-            name: 'echo',
-            description: 'Repite el mensaje proporcionado',
-            inputSchema: {
-              type: 'object',
-              properties: {
-                message: {
-                  type: 'string',
-                  description: 'Mensaje a repetir',
-                },
-              },
-              required: ['message'],
-            },
-          },
-          {
-            name: 'get_time',
-            description: 'Obtiene la hora actual',
-            inputSchema: {
-              type: 'object',
-              properties: {},
-            },
-          },
-        ],
+        tools: this.toolsRegistry.getAvailableTools(),
       };
     });
 
     // Manejar llamadas a herramientas
     this.server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const { name, arguments: args } = request.params;
-
-      switch (name) {
-        case 'echo':
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Echo: ${args.message}`,
-              },
-            ],
-          };
-
-        case 'get_time':
-          return {
-            content: [
-              {
-                type: 'text',
-                text: `Hora actual: ${new Date().toISOString()}`,
-              },
-            ],
-          };
-
-        default:
-          throw new McpError(
-            ErrorCode.MethodNotFound,
-            `Herramienta desconocida: ${name}`
-          );
+      
+      try {
+        this.logger.info(`Ejecutando herramienta: ${name}`, { args });
+        
+        const result = await this.toolsRegistry.executeTool(name, args);
+        
+        this.logger.info(`Herramienta ${name} ejecutada exitosamente`);
+        
+        return {
+          content: [
+            {
+              type: 'text',
+              text: typeof result === 'string' ? result : JSON.stringify(result, null, 2),
+            },
+          ],
+        };
+        
+      } catch (error) {
+        this.logger.error(`Error ejecutando herramienta ${name}:`, error);
+        
+        throw new McpError(
+          ErrorCode.InternalError,
+          `Error ejecutando ${name}: ${error.message}`
+        );
       }
     });
   }
 
   setupErrorHandling() {
     this.server.onerror = (error) => {
-      console.error('[MCP Error]', error);
+      this.logger.error('[MCP Server Error]', error);
     };
 
+    // Manejo de señales del sistema
     process.on('SIGINT', async () => {
-      await this.server.close();
+      this.logger.info('Recibida señal SIGINT. Cerrando servidor...');
+      await this.shutdown();
       process.exit(0);
+    });
+
+    process.on('SIGTERM', async () => {
+      this.logger.info('Recibida señal SIGTERM. Cerrando servidor...');
+      await this.shutdown();
+      process.exit(0);
+    });
+
+    // Manejo de errores no capturados
+    process.on('uncaughtException', async (error) => {
+      this.logger.error('Error no capturado:', error);
+      await this.shutdown();
+      process.exit(1);
+    });
+
+    process.on('unhandledRejection', async (reason, promise) => {
+      this.logger.error('Promesa rechazada no manejada:', { reason, promise });
+      await this.shutdown();
+      process.exit(1);
     });
   }
 
+  async shutdown() {
+    try {
+      this.logger.info('Cerrando servidor MCP Universal...');
+      
+      await this.server.close();
+      await this.dbManager.disconnect();
+      
+      this.logger.info('✅ Servidor cerrado correctamente');
+      
+    } catch (error) {
+      this.logger.error('Error durante el cierre:', error);
+    }
+  }
+
   async run() {
-    const transport = new StdioServerTransport();
-    await this.server.connect(transport);
-    console.error('Servidor MCP iniciado en stdio');
+    try {
+      await this.initialize();
+      
+      const transport = new StdioServerTransport();
+      await this.server.connect(transport);
+      
+      this.logger.info('🌟 Servidor MCP Universal ejecutándose en stdio');
+      
+    } catch (error) {
+      this.logger.error('Error al iniciar el servidor:', error);
+      process.exit(1);
+    }
   }
 }
 
-// Iniciar el servidor
-const server = new MCPServer();
-server.run().catch((error) => {
-  console.error('Error al iniciar el servidor:', error);
-  process.exit(1);
-});
+// Función principal
+async function main() {
+  const server = new UniversalMCPServer();
+  await server.run();
+}
+
+// Ejecutar solo si es el módulo principal
+if (import.meta.url === `file://${process.argv[1]}`) {
+  main().catch((error) => {
+    console.error('Error fatal:', error);
+    process.exit(1);
+  });
+}
+
+export { UniversalMCPServer };
