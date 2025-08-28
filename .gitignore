@@ -50,10 +50,12 @@ typings/
 # Yarn Integrity file
 .yarn-integrity
 
-# dotenv environment variables file
+# Environment variables
 .env
-.env.test
-.env.production
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
 
 # parcel-bundler cache
 .cache
@@ -74,6 +76,10 @@ dist
 tmp/
 temp/
 
+# Logs
+logs/
+*.log
+
 # Editor directories and files
 .vscode/
 .idea/
@@ -89,3 +95,25 @@ temp/
 .Trashes
 ehthumbs.db
 Thumbs.db
+
+# MCP Server specific
+config/local.json
+data/
+backups/
+uploads/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# SSL certificates
+*.pem
+*.crt
+*.key
+
+# API keys and secrets (extra protection)
+*secret*
+*key*
+*token*
+.secrets/
